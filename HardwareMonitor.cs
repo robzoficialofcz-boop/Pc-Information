@@ -18,17 +18,13 @@ public sealed class HardwareMonitor : IDisposable
     };
 
     private readonly object _sensorLock = new();
-    private readonly NetworkInterface[] _networkInterfaces;
+    private bool _disposed;
     private long _lastIdle, _lastKernel, _lastUser;
     private bool _cpuTimesInitialized;
 
     public HardwareMonitor()
     {
         try { _computer.Open(); } catch { }
-        _networkInterfaces = NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                        n.OperationalStatus == OperationalStatus.Up)
-            .ToArray();
     }
 
     public HardwareInfo GetHardwareInfo()
@@ -40,10 +36,7 @@ public sealed class HardwareMonitor : IDisposable
         var biosVersion = ReadWmi("Win32_BIOS", "SMBIOSBIOSVersion");
         var gpuNames = ReadAllWmi("Win32_VideoController", "Name");
         var gpuMemoryBytes = ReadAllWmiUInt64("Win32_VideoController", "AdapterRAM").FirstOrDefault();
-        var driveLines = DriveInfo.GetDrives()
-            .Where(d => d.IsReady)
-            .Select(d => $"{d.Name}  •  {ToGB(d.TotalSize):0.0} GB")
-            .ToArray();
+        var driveLines = GetDriveLines();
 
         var board = $"{boardManufacturer} {boardProduct}".Trim();
         var bios = $"{biosManufacturer} • {biosVersion}".Trim(' ', '•');
@@ -73,19 +66,22 @@ public sealed class HardwareMonitor : IDisposable
 
         lock (_sensorLock)
         {
-            try
+            if (_disposed) throw new ObjectDisposedException(nameof(HardwareMonitor));
+
+            foreach (var hardware in _computer.Hardware)
             {
-                foreach (var hardware in _computer.Hardware)
+                try
                 {
                     UpdateHardwareRecursive(hardware);
                     foreach (var sensor in GetSensorsRecursive(hardware))
                     {
-                        if (sensor.Value is not float value) continue;
+                        if (sensor.Value is not float value || !float.IsFinite(value)) continue;
 
                         if (hardware.HardwareType == HardwareType.Cpu)
                         {
                             if (sensor.SensorType == SensorType.Temperature &&
-                                sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase))
+                                (sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase) ||
+                                 sensor.Name.Contains("Core Max", StringComparison.OrdinalIgnoreCase)))
                                 cpuTemp ??= value;
 
                             if (sensor.SensorType == SensorType.Load &&
@@ -113,10 +109,10 @@ public sealed class HardwareMonitor : IDisposable
                         }
                     }
                 }
-            }
-            catch
-            {
-                // Nem todo hardware expõe sensores compatíveis.
+                catch
+                {
+                    // Um sensor defeituoso não deve impedir a leitura dos outros dispositivos.
+                }
             }
         }
 
@@ -139,8 +135,11 @@ public sealed class HardwareMonitor : IDisposable
 
     private static void UpdateHardwareRecursive(IHardware hardware)
     {
-        hardware.Update();
-        foreach (var sub in hardware.SubHardware) UpdateHardwareRecursive(sub);
+        try { hardware.Update(); } catch { }
+        foreach (var sub in hardware.SubHardware)
+        {
+            try { UpdateHardwareRecursive(sub); } catch { }
+        }
     }
 
     private double GetCpuLoad()
@@ -209,31 +208,65 @@ public sealed class HardwareMonitor : IDisposable
     private static (double total, double free) GetDiskTotals()
     {
         double total = 0, free = 0;
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.IsReady && d.DriveType == DriveType.Fixed))
+        foreach (var drive in DriveInfo.GetDrives())
         {
-            total += drive.TotalSize;
-            free += drive.AvailableFreeSpace;
+            try
+            {
+                if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
+                total += drive.TotalSize;
+                free += drive.AvailableFreeSpace;
+            }
+            catch
+            {
+                // Unidades removíveis/desconectadas podem falhar durante a leitura.
+            }
         }
 
         const double gb = 1024d * 1024d * 1024d;
         return (total / gb, free / gb);
     }
 
-    private (long received, long sent) GetNetworkTotals()
+    private static string[] GetDriveLines()
     {
-        long received = 0, sent = 0;
-        foreach (var adapter in _networkInterfaces)
+        var lines = new List<string>();
+        foreach (var drive in DriveInfo.GetDrives())
         {
             try
             {
-                var stats = adapter.GetIPv4Statistics();
-                received += stats.BytesReceived;
-                sent += stats.BytesSent;
+                if (drive.IsReady && drive.DriveType == DriveType.Fixed)
+                    lines.Add($"{drive.Name}  •  {ToGB(drive.TotalSize):0.0} GB");
             }
             catch { }
         }
+        return lines.ToArray();
+    }
+
+    private static (long received, long sent) GetNetworkTotals()
+    {
+        long received = 0, sent = 0;
+        // Re-enumerar a cada leitura inclui adaptadores que conectaram após a abertura do app.
+        foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            try
+            {
+                if (adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                    adapter.OperationalStatus != OperationalStatus.Up)
+                    continue;
+
+                var stats = adapter.GetIPv4Statistics();
+                received = SaturatingAdd(received, stats.BytesReceived);
+                sent = SaturatingAdd(sent, stats.BytesSent);
+            }
+            catch
+            {
+                // Interfaces sem IPv4 ou que mudaram de estado são ignoradas.
+            }
+        }
         return (received, sent);
     }
+
+    private static long SaturatingAdd(long left, long right)
+        => right > 0 && left > long.MaxValue - right ? long.MaxValue : left + right;
 
     private static string ReadWmi(string className, string property)
         => ReadAllWmi(className, property).FirstOrDefault() ?? "";
@@ -283,7 +316,12 @@ public sealed class HardwareMonitor : IDisposable
 
     public void Dispose()
     {
-        try { _computer.Close(); } catch { }
+        lock (_sensorLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { _computer.Close(); } catch { }
+        }
     }
 }
 
