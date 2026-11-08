@@ -11,6 +11,10 @@ public partial class MainWindow : Window
     private long _lastReceived;
     private long _lastSent;
     private bool _networkSampleInitialized;
+    private bool _isFullscreen;
+    private WindowStyle _previousWindowStyle;
+    private ResizeMode _previousResizeMode;
+    private WindowState _previousWindowState;
 
     public MainWindow()
     {
@@ -29,6 +33,43 @@ public partial class MainWindow : Window
             _timer.Stop();
             _monitor.Dispose();
         };
+    }
+
+
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.F11)
+        {
+            ToggleFullscreen();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape && _isFullscreen)
+        {
+            ExitFullscreen();
+            e.Handled = true;
+        }
+    }
+
+    private void ToggleFullscreen()
+    {
+        if (_isFullscreen) { ExitFullscreen(); return; }
+        _previousWindowStyle = WindowStyle;
+        _previousResizeMode = ResizeMode;
+        _previousWindowState = WindowState;
+        WindowState = WindowState.Normal;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        WindowState = WindowState.Maximized;
+        _isFullscreen = true;
+    }
+
+    private void ExitFullscreen()
+    {
+        WindowState = WindowState.Normal;
+        WindowStyle = _previousWindowStyle;
+        ResizeMode = _previousResizeMode;
+        WindowState = _previousWindowState;
+        _isFullscreen = false;
     }
 
     private async Task RefreshHardwareDetailsAsync()
