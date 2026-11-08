@@ -84,9 +84,10 @@ public sealed class HardwareMonitor : IDisposable
                         {
                             if (sensor.SensorType == SensorType.Temperature)
                             {
-                                if (sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase) ||
-                                    sensor.Name.Contains("Core Max", StringComparison.OrdinalIgnoreCase))
+                                if (sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase))
                                     cpuTemp = value;
+                                else if (sensor.Name.Contains("Core Max", StringComparison.OrdinalIgnoreCase))
+                                    cpuTemp ??= value;
                                 else
                                     cpuTemp ??= value;
                             }
@@ -220,19 +221,23 @@ public sealed class HardwareMonitor : IDisposable
     private static (double total, double free) GetDiskTotals()
     {
         double total = 0, free = 0;
-        foreach (var drive in DriveInfo.GetDrives())
+        try
         {
-            try
+            foreach (var drive in DriveInfo.GetDrives())
             {
-                if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
-                total += drive.TotalSize;
-                free += drive.AvailableFreeSpace;
-            }
-            catch
-            {
-                // Unidades removíveis/desconectadas podem falhar durante a leitura.
+                try
+                {
+                    if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
+                    total += drive.TotalSize;
+                    free += drive.AvailableFreeSpace;
+                }
+                catch
+                {
+                    // Unidades removíveis/desconectadas podem falhar durante a leitura.
+                }
             }
         }
+        catch { }
 
         const double gb = 1024d * 1024d * 1024d;
         return (total / gb, free / gb);
@@ -241,15 +246,19 @@ public sealed class HardwareMonitor : IDisposable
     private static string[] GetDriveLines()
     {
         var lines = new List<string>();
-        foreach (var drive in DriveInfo.GetDrives())
+        try
         {
-            try
+            foreach (var drive in DriveInfo.GetDrives())
             {
-                if (drive.IsReady && drive.DriveType == DriveType.Fixed)
-                    lines.Add($"{drive.Name}  •  {ToGB(drive.TotalSize):0.0} GB");
+                try
+                {
+                    if (drive.IsReady && drive.DriveType == DriveType.Fixed)
+                        lines.Add($"{drive.Name}  •  {ToGB(drive.TotalSize):0.0} GB");
+                }
+                catch { }
             }
-            catch { }
         }
+        catch { }
         return lines.ToArray();
     }
 
@@ -257,23 +266,27 @@ public sealed class HardwareMonitor : IDisposable
     {
         long received = 0, sent = 0;
         // Re-enumerar a cada leitura inclui adaptadores que conectaram após a abertura do app.
-        foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+        try
         {
-            try
+            foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
             {
-                if (adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-                    adapter.OperationalStatus != OperationalStatus.Up)
-                    continue;
+                try
+                {
+                    if (adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                        adapter.OperationalStatus != OperationalStatus.Up)
+                        continue;
 
-                var stats = adapter.GetIPv4Statistics();
-                received = SaturatingAdd(received, stats.BytesReceived);
-                sent = SaturatingAdd(sent, stats.BytesSent);
-            }
-            catch
-            {
-                // Interfaces sem IPv4 ou que mudaram de estado são ignoradas.
+                    var stats = adapter.GetIPv4Statistics();
+                    received = SaturatingAdd(received, stats.BytesReceived);
+                    sent = SaturatingAdd(sent, stats.BytesSent);
+                }
+                catch
+                {
+                    // Interfaces sem IPv4 ou que mudaram de estado são ignoradas.
+                }
             }
         }
+        catch { }
         return (received, sent);
     }
 
@@ -309,6 +322,7 @@ public sealed class HardwareMonitor : IDisposable
         try
         {
             using var searcher = new ManagementObjectSearcher($"SELECT {property} FROM {className}");
+            searcher.Options.Timeout = TimeSpan.FromSeconds(5);
             foreach (ManagementObject item in searcher.Get())
             {
                 using (item)
