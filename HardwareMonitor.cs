@@ -19,13 +19,11 @@ public sealed class HardwareMonitor : IDisposable
 
     private readonly object _sensorLock = new();
     private bool _disposed;
+    private bool _openAttempted;
     private long _lastIdle, _lastKernel, _lastUser;
     private bool _cpuTimesInitialized;
 
-    public HardwareMonitor()
-    {
-        try { _computer.Open(); } catch { }
-    }
+    public HardwareMonitor() { }
 
     public HardwareInfo GetHardwareInfo()
     {
@@ -67,6 +65,11 @@ public sealed class HardwareMonitor : IDisposable
         lock (_sensorLock)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(HardwareMonitor));
+            if (!_openAttempted)
+            {
+                _openAttempted = true;
+                try { _computer.Open(); } catch { }
+            }
 
             foreach (var hardware in _computer.Hardware)
             {
@@ -79,10 +82,14 @@ public sealed class HardwareMonitor : IDisposable
 
                         if (hardware.HardwareType == HardwareType.Cpu)
                         {
-                            if (sensor.SensorType == SensorType.Temperature &&
-                                (sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase) ||
-                                 sensor.Name.Contains("Core Max", StringComparison.OrdinalIgnoreCase)))
-                                cpuTemp ??= value;
+                            if (sensor.SensorType == SensorType.Temperature)
+                            {
+                                if (sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase) ||
+                                    sensor.Name.Contains("Core Max", StringComparison.OrdinalIgnoreCase))
+                                    cpuTemp = value;
+                                else
+                                    cpuTemp ??= value;
+                            }
 
                             if (sensor.SensorType == SensorType.Load &&
                                 sensor.Name.Contains("Total", StringComparison.OrdinalIgnoreCase))
@@ -91,10 +98,15 @@ public sealed class HardwareMonitor : IDisposable
 
                         if (hardware.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
                         {
-                            if (sensor.SensorType == SensorType.Load &&
-                                (sensor.Name.Contains("Core", StringComparison.OrdinalIgnoreCase) ||
-                                 sensor.Name.Contains("GPU", StringComparison.OrdinalIgnoreCase)))
-                                gpuLoad ??= value;
+                            if (sensor.SensorType == SensorType.Load)
+                            {
+                                if (sensor.Name.Contains("Core", StringComparison.OrdinalIgnoreCase) ||
+                                    sensor.Name.Contains("GPU", StringComparison.OrdinalIgnoreCase) ||
+                                    sensor.Name.Contains("D3D 3D", StringComparison.OrdinalIgnoreCase))
+                                    gpuLoad = value;
+                                else
+                                    gpuLoad ??= value;
+                            }
 
                             if (sensor.SensorType == SensorType.Temperature)
                                 gpuTemp ??= value;
@@ -277,6 +289,7 @@ public sealed class HardwareMonitor : IDisposable
         try
         {
             using var searcher = new ManagementObjectSearcher($"SELECT {property} FROM {className}");
+            searcher.Options.Timeout = TimeSpan.FromSeconds(5);
             foreach (ManagementObject item in searcher.Get())
             {
                 using (item)
