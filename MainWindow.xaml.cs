@@ -11,6 +11,8 @@ public partial class MainWindow : Window
     private long _lastReceived;
     private long _lastSent;
     private bool _networkSampleInitialized;
+    private bool _refreshingLiveData;
+    private string _gpuMemoryFallback = "indisponível";
     private bool _isFullscreen;
     private WindowStyle _previousWindowStyle;
     private ResizeMode _previousResizeMode;
@@ -24,9 +26,9 @@ public partial class MainWindow : Window
             ComputerNameText.Text = Environment.MachineName;
             WindowsText.Text = $"{Environment.OSVersion.VersionString} • {(Environment.Is64BitOperatingSystem ? "64 bits" : "32 bits")}";
             await RefreshHardwareDetailsAsync();
-            _timer.Tick += (_, _) => RefreshLiveData();
+            _timer.Tick += async (_, _) => await RefreshLiveDataAsync();
             _timer.Start();
-            RefreshLiveData();
+            await RefreshLiveDataAsync();
         };
         Closed += (_, _) =>
         {
@@ -83,6 +85,7 @@ public partial class MainWindow : Window
             BiosText.Text = info.Bios;
             CpuDetailText.Text = info.CpuName;
             SystemDetailText.Text = $"{info.OperatingSystem} • {info.Architecture}";
+            _gpuMemoryFallback = info.GpuMemory;
             GpuDetailText.Text = $"VRAM dedicada: {info.GpuMemory}";
             DrivesText.Text = info.Drives;
             StatusText.Text = info.SensorNote;
@@ -93,11 +96,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RefreshLiveData()
+    private async Task RefreshLiveDataAsync()
     {
+        if (_refreshingLiveData) return;
+        _refreshingLiveData = true;
         try
         {
-            var data = _monitor.GetLiveData();
+            var data = await Task.Run(_monitor.GetLiveData);
             CpuUsageText.Text = $"{data.CpuLoad:0}%";
             CpuBar.Value = Clamp(data.CpuLoad);
             CpuTempText.Text = data.CpuTemperature is double cpuTemp
@@ -111,7 +116,9 @@ public partial class MainWindow : Window
 
             GpuUsageText.Text = data.GpuLoad is double gpuLoad ? $"{gpuLoad:0}%" : "N/D";
             GpuBar.Value = data.GpuLoad is double load ? Clamp(load) : 0;
-            GpuDetailText.Text = $"VRAM dedicada: {data.GpuMemoryText}" +
+            var gpuMemoryDisplay = data.GpuMemoryText.Equals("indisponível", StringComparison.OrdinalIgnoreCase)
+                ? _gpuMemoryFallback : data.GpuMemoryText;
+            GpuDetailText.Text = $"VRAM dedicada: {gpuMemoryDisplay}" +
                 (data.GpuTemperature is double gpuTemp ? $" • {gpuTemp:0} °C" : "");
 
             DiskUsageText.Text = $"{data.DiskUsed:0.0} GB";
@@ -141,6 +148,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Falha temporária na leitura: {ex.Message}";
+        }
+        finally
+        {
+            _refreshingLiveData = false;
         }
     }
 
