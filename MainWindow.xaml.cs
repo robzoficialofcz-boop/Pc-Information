@@ -10,6 +10,7 @@ public partial class MainWindow : Window
     private DateTime _lastNetworkSample = DateTime.UtcNow;
     private long _lastReceived;
     private long _lastSent;
+    private bool _networkSampleInitialized;
 
     public MainWindow()
     {
@@ -79,8 +80,18 @@ public partial class MainWindow : Window
 
             var now = DateTime.UtcNow;
             var elapsed = Math.Max(0.1, (now - _lastNetworkSample).TotalSeconds);
-            DownloadText.Text = FormatRate((data.BytesReceived - _lastReceived) / elapsed);
-            UploadText.Text = FormatRate((data.BytesSent - _lastSent) / elapsed);
+            if (_networkSampleInitialized)
+            {
+                DownloadText.Text = FormatRate((data.BytesReceived - _lastReceived) / elapsed);
+                UploadText.Text = FormatRate((data.BytesSent - _lastSent) / elapsed);
+            }
+            else
+            {
+                DownloadText.Text = "Calculando...";
+                UploadText.Text = "Calculando...";
+                _networkSampleInitialized = true;
+            }
+
             _lastReceived = data.BytesReceived;
             _lastSent = data.BytesSent;
             _lastNetworkSample = now;
